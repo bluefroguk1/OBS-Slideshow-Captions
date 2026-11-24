@@ -1,0 +1,67 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 45
+    permissions:
+      contents: write # lets the release step attach files
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          & "$env:VCPKG_INSTALLATION_ROOT/vcpkg.exe" install 'exiv2[xmp,png]:x64-windows-static-md' 'pcre2:x64-windows-static-md'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Configure and build
+        shell: pwsh
+        run: |
+          cmake --preset windows-x64 "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-windows-static-md -DPCRE2_USE_STATIC_LIBS=ON
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build --preset windows-x64
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Stage the plugin
+        shell: pwsh
+        run: |
+          cmake --install build_x64 --config RelWithDebInfo --prefix "$env:RUNNER_TEMP/stage"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $plugin = "$env:RUNNER_TEMP/stage/slideshow-caption"
+          foreach ($file in @('slideshow-caption.dll', 'data/caption-fade.effect', 'data/locale/en-US.ini')) {
+            if (!(Test-Path -LiteralPath "$plugin/$file" -PathType Leaf)) { throw "Missing packaged file $file" }
+          }
+
+      - name: Package zip and installer
+        shell: pwsh
+        run: |
+          $version = (Get-Content buildspec.json -Raw | ConvertFrom-Json).version
+          $out = "$env:RUNNER_TEMP/out"
+          New-Item -ItemType Directory $out | Out-Null
+          Compress-Archive -Path "$env:RUNNER_TEMP/stage/slideshow-caption" -DestinationPath "$out/slideshow-captions-$version-windows-x64.zip"
+          & "${env:ProgramFiles(x86)}/Inno Setup 6/ISCC.exe" "/DAppVersion=$version" "/DSourceDir=$env:RUNNER_TEMP/stage/slideshow-caption" "/DOutputDir=$out" installer/slideshow-caption.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: slideshow-captions-windows-x64
+          path: ${{ runner.temp }}/out/
+          if-no-files-found: error
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ runner.temp }}/out/*
+          generate_release_notes: true
