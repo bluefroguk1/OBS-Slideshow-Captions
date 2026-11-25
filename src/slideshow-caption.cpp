@@ -844,7 +844,7 @@ obs_properties_t *properties(void *opaque)
 	obs_property_set_modified_callback(transition, property_visibility);
 	auto *duration = obs_properties_add_bool(props, "match_duration", "Match slideshow duration");
 	obs_property_set_modified_callback(duration, property_visibility);
-	obs_properties_add_bool(props, "swipe_text_box", "Use text box for swipe");
+	obs_properties_add_bool(props, "swipe_text_box", "Use text box boundary for swipe");
 	for (auto choice : {Transition::Instant, Transition::Fade, Transition::MatchStyle, Transition::Obs})
 		obs_properties_add_int(props, duration_setting(choice), "Duration (ms)", 0, 20000, 1);
 	auto *preview = obs_properties_add_button2(props, "preview", "Preview on the Text source",

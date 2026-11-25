@@ -174,7 +174,7 @@ slideshow's transition time instead.
 matching is also enabled, it follows the linked slideshow's live transition
 progress when OBS exposes it.
 
-With **Match slideshow style**, enable **Use text box for swipe** to move the
+With **Match slideshow style**, enable **Use text box boundary for swipe** to move the
 Swipe mask across the Text scene item's bounding box. The mask includes empty
 space around a short caption. With the option off, the mask travels only across
 the outgoing and incoming caption textures' combined width. The difference is
