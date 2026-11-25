@@ -176,7 +176,9 @@ progress when OBS exposes it.
 
 With **Match slideshow style**, enable **Use text box for swipe** to move the
 Swipe mask across the Text scene item's bounding box. The mask includes empty
-space around a short caption. This option is off by default. The filter uses
+space around a short caption. With the option off, the mask travels only across
+the outgoing and incoming caption textures' combined width. The difference is
+most visible when the text box is wider than both captions. The filter uses
 the caption texture as the swipe area when the scene item has no bounds, is
 cropped, or has multiple visible placements.
 

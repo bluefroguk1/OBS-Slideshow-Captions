@@ -43,7 +43,6 @@ struct Options {
 	std::string slideshow;
 	Transition transition = Transition::Instant;
 	bool match_duration = false;
-	bool swipe_text_box = false;
 	uint32_t duration_ms = 0;
 };
 
@@ -133,7 +132,7 @@ struct Filter {
 	std::atomic<bool> capture_requested{false};
 	std::atomic<bool> capture_ready{false};
 	std::atomic<float> blend_progress{-1.0f};
-	std::atomic<bool> blend_box_swipe{false};
+	std::atomic<bool> swipe_text_box{false};
 	Source slideshow_transition{nullptr, obs_source_release};
 	gs_texrender_t *outgoing = nullptr;
 	SwipeLimits outgoing_limits;
@@ -364,7 +363,6 @@ void animate(Filter &filter, obs_source_t *parent, std::string caption)
 	const auto duration_ms = match_duration ? slideshow_ms : filter.current.duration_ms;
 	if (transition == Transition::MatchStyle && visual != Visual::Cut && duration_ms && filter.outgoing) {
 		select_swipe_item(filter, parent);
-		filter.blend_box_swipe = filter.current.swipe_text_box;
 		filter.blend_progress = -1.0f;
 		filter.capture_ready = false;
 		filter.capture_requested = true;
@@ -432,7 +430,7 @@ void update(void *opaque, obs_data_t *settings)
 	options.caption.metadata = obs_data_get_string(settings, "metadata");
 	options.transition = static_cast<Transition>(obs_data_get_int(settings, "transition"));
 	options.match_duration = obs_data_get_bool(settings, "match_duration");
-	options.swipe_text_box = obs_data_get_bool(settings, "swipe_text_box");
+	filter.swipe_text_box = obs_data_get_bool(settings, "swipe_text_box");
 	const auto *duration_key = duration_setting(options.transition);
 	options.duration_ms = static_cast<uint32_t>(std::clamp<int64_t>(obs_data_get_int(settings, duration_key), 0, 20000));
 	std::lock_guard lock(filter.mailbox);
@@ -440,12 +438,15 @@ void update(void *opaque, obs_data_t *settings)
 		return std::tie(caption.mode, caption.filename_part, caption.separator, caption.pattern, caption.format,
 				caption.index, caption.metadata);
 	};
-	const bool refresh = filter.options.slideshow == options.slideshow && filter.has_path &&
-			     caption_fields(filter.options.caption) != caption_fields(options.caption);
+	const bool caption_changed = caption_fields(filter.options.caption) != caption_fields(options.caption);
+	const bool slideshow_changed = filter.options.slideshow != options.slideshow;
+	const bool transition_changed = filter.options.transition != options.transition ||
+					filter.options.match_duration != options.match_duration ||
+					filter.options.duration_ms != options.duration_ms;
 	filter.options = std::move(options);
-	if (refresh)
+	if (caption_changed && !slideshow_changed && filter.has_path)
 		request_caption(filter);
-	filter.options_changed = true;
+	filter.options_changed |= caption_changed || slideshow_changed || transition_changed;
 }
 
 void tick(void *opaque, float seconds)
@@ -581,7 +582,7 @@ void tick(void *opaque, float seconds)
 			}
 		}
 	}
-	if (filter.current.swipe_text_box && filter.visual.load() == Visual::Swipe &&
+	if (filter.swipe_text_box && filter.visual.load() == Visual::Swipe &&
 	    (filter.stage == Stage::Hiding || filter.stage == Stage::Showing))
 		select_swipe_item(filter, parent.get());
 }
@@ -656,10 +657,13 @@ bool render_blend(Filter &filter, float progress, uint32_t width, uint32_t heigh
 	const float fit = static_cast<float>(width) / gs_texture_get_width(texture);
 	const float ratio = bounded ? old_span / span : fit;
 	const float offset = bounded ? old.left - limits.left * ratio : (1.0f - fit) / 2.0f;
-	const bool box_swipe = bounded && filter.blend_box_swipe;
-	const bool box_motion = bounded && (box_swipe || style == Visual::Slide);
-	const float left = std::min({0.0f, -offset / ratio, box_motion ? limits.left : 0.0f});
-	const float right = std::max({1.0f, (1.0f - offset) / ratio, box_motion ? limits.right : 1.0f});
+	const float text_left = std::min(0.0f, -offset / ratio);
+	const float text_right = std::max(1.0f, (1.0f - offset) / ratio);
+	const bool use_box = bounded && (style == Visual::Slide || (style == Visual::Swipe && filter.swipe_text_box));
+	const float motion_left = use_box ? limits.left : (style == Visual::Swipe ? text_left : 0.0f);
+	const float motion_right = use_box ? limits.right : (style == Visual::Swipe ? text_right : 1.0f);
+	const float left = std::min(text_left, motion_left);
+	const float right = std::max(text_right, motion_right);
 	auto *effect = filter.effect;
 	gs_effect_set_texture_srgb(gs_effect_get_param_by_name(effect, "outgoing_image"), texture);
 	gs_effect_set_int(gs_effect_get_param_by_name(effect, "style"), static_cast<int>(style));
@@ -670,9 +674,8 @@ bool render_blend(Filter &filter, float progress, uint32_t width, uint32_t heigh
 			    static_cast<float>(height) / gs_texture_get_height(texture));
 	gs_effect_set_float(gs_effect_get_param_by_name(effect, "canvas_left"), left);
 	gs_effect_set_float(gs_effect_get_param_by_name(effect, "canvas_span"), right - left);
-	gs_effect_set_float(gs_effect_get_param_by_name(effect, "swipe_left"), box_motion ? limits.left : 0.0f);
-	gs_effect_set_float(gs_effect_get_param_by_name(effect, "swipe_right"), box_motion ? limits.right : 1.0f);
-	gs_effect_set_bool(gs_effect_get_param_by_name(effect, "box_swipe"), box_swipe);
+	gs_effect_set_float(gs_effect_get_param_by_name(effect, "swipe_left"), motion_left);
+	gs_effect_set_float(gs_effect_get_param_by_name(effect, "swipe_right"), motion_right);
 	gs_blend_state_push();
 	gs_blend_function(GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
 	obs_source_process_filter_tech_end(filter.source, effect, 0, 0, "Blend");

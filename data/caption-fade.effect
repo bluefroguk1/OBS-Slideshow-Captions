@@ -12,7 +12,6 @@ uniform float old_offset;
 uniform float old_height_ratio;
 uniform float canvas_left;
 uniform float canvas_span;
-uniform bool box_swipe;
 
 sampler_state caption_sampler {
 	Filter   = Linear;
@@ -77,13 +76,8 @@ float4 PSBlend(VertInOut vert_in) : TARGET
 		previous = outgoing_image.Sample(caption_sampler, outgoing_uv);
 	if (incoming_uv.x >= 0.0 && incoming_uv.x < 1.0)
 		next = image.Sample(caption_sampler, incoming_uv);
-	if (style == 2) {
-		if (box_swipe)
-			return uv.x < lerp(swipe_left, swipe_right, 1.0 - t) ? previous : next;
-		previous = outgoing_uv.x < 1.0 - t ? previous : float4(0.0, 0.0, 0.0, 0.0);
-		next = incoming_uv.x >= 1.0 - t ? next : float4(0.0, 0.0, 0.0, 0.0);
-		return next + previous * (1.0 - next.a);
-	}
+	if (style == 2)
+		return uv.x < lerp(swipe_left, swipe_right, 1.0 - t) ? previous : next;
 	if (style == 3) {
 		if (uv.x < swipe_left || uv.x >= swipe_right)
 			return float4(0.0, 0.0, 0.0, 0.0);
