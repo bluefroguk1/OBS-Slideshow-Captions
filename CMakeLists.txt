@@ -7,13 +7,8 @@ project(${_name} VERSION ${_version})
 option(ENABLE_FRONTEND_API "Use obs-frontend-api for UI functionality" OFF)
 option(ENABLE_QT "Use Qt functionality" OFF)
 
-set(OBS_MACOS_APP "" CACHE PATH "Build against this installed OBS.app instead of downloading the OBS SDK")
-if(APPLE AND OBS_MACOS_APP)
-  include(macos-app-sdk)
-else()
-  include(compilerconfig)
-  include(defaults)
-endif()
+include(compilerconfig)
+include(defaults)
 include(helpers)
 
 add_library(${CMAKE_PROJECT_NAME} MODULE)
@@ -33,7 +28,7 @@ if(ENABLE_QT)
   target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE Qt6::Core Qt6::Widgets)
   target_compile_options(
     ${CMAKE_PROJECT_NAME}
-    PRIVATE "$<$<COMPILE_LANG_AND_ID:C,Clang,AppleClang>:-Wno-quoted-include-in-framework-header;-Wno-comma>"
+    PRIVATE "$<$<COMPILE_LANG_AND_ID:C,Clang>:-Wno-quoted-include-in-framework-header;-Wno-comma>"
   )
   set_target_properties(
     ${CMAKE_PROJECT_NAME}

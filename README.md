@@ -1,8 +1,8 @@
-# OBS Slideshow Captions
+# Slideshow Captions
 
 Show a caption under each picture in an OBS **Image Slideshow**, automatically.
 
-Slideshow Caption is a filter for OBS Studio 33 that you add to a **Text
+Slideshow Caption is a third-party filter for OBS Studio 33 that you add to a **Text
 source**. Whenever the slideshow moves to the next image, the filter works out
 a caption (from the filename, a text file, or the picture's own metadata) and
 puts it into the Text source, with an optional fade between captions.
@@ -199,6 +199,22 @@ scene isn't in Program.
 | Odd characters | Save text files as UTF-8. |
 | Regex shows nothing | The pattern didn't match. A bad pattern is reported in the OBS log (**Help → Log Files**). |
 
+## Support
+
+Found a bug or have a feature request? Please open an issue at
+<https://github.com/bluefroguk1/Slideshow-Captions/issues>. Include your
+OBS version and the relevant part of the OBS log (**Help → Log Files**).
+
+## AI disclosure
+
+The code in this plugin was written by a human and reviewed and co-tested with
+Claude (an AI assistant from Anthropic). Claude was used as a review and
+testing aid; all changes were checked by the author before release.
+
 ## Licence
+
+This is an independent, third-party plugin. It is not affiliated with or
+endorsed by the OBS Project.
+
 
 Built for OBS Studio 33 or newer. Licensed under the GNU GPL v2 (see [LICENSE](LICENSE)).

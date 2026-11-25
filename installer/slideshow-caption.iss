@@ -7,10 +7,10 @@
 
 [Setup]
 AppId={{6E1B6B7A-3C57-4B0B-9C0A-5E7D2A9D4F21}
-AppName=Slideshow Captions for OBS Studio
+AppName=Slideshow Captions
 AppVersion={#AppVersion}
 AppPublisher=Bluefroguk
-AppPublisherURL=https://github.com/bluefroguk1/OBS-Slideshow-Captions
+AppPublisherURL=https://github.com/bluefroguk1/Slideshow-Captions
 DefaultDirName={commonappdata}\obs-studio\plugins\slideshow-caption
 DisableDirPage=yes
 DisableProgramGroupPage=yes
@@ -21,7 +21,7 @@ OutputDir={#OutputDir}
 OutputBaseFilename=slideshow-captions-{#AppVersion}-windows-x64-setup
 Compression=lzma2
 SolidCompression=yes
-UninstallDisplayName=Slideshow Captions for OBS Studio
+UninstallDisplayName=Slideshow Captions
 
 [Files]
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
