@@ -208,8 +208,8 @@ OBS version and the relevant part of the OBS log (**Help → Log Files**).
 ## AI disclosure
 
 The code in this plugin was written by a human and reviewed and co-tested with
-Claude (an AI assistant from Anthropic). Claude was used as a review and
-testing aid; all changes were checked by the author before release.
+Claude Code. Claude was used as a review and
+testing aid; all changes were checked and fully tested by the author before release. No hands off vibe coding was used.
 
 ## Licence
 
