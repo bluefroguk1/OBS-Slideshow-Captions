@@ -1,5 +1,5 @@
 ; Inno Setup script. Built by CI with:
-;   iscc /DAppVersion=1.0.0 /DSourceDir=<staged slideshow-caption folder> /DOutputDir=<out> installer\slideshow-caption.iss
+;   iscc /DAppVersion=1.0.1 /DSourceDir=<staged slideshow-caption folder> /DOutputDir=<out> installer\slideshow-caption.iss
 
 #ifndef AppVersion
   #define AppVersion "0.0.0"

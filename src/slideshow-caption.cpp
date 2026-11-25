@@ -551,7 +551,8 @@ void tick(void *opaque, float seconds)
 		filter.blend_progress = filter.capture_ready ? std::clamp(progress, 0.0f, 1.0f) : -1.0f;
 		select_swipe_item(filter, parent.get());
 		const float hold = filter.preview_original ? 1.0f : 0.0f;
-		if (progress >= 1.0f && filter.elapsed >= filter.in + hold) {
+		// Fallback: a linked transition that never reports 1.0 must not leave the caption blending forever.
+		if ((progress >= 1.0f && filter.elapsed >= filter.in + hold) || filter.elapsed >= filter.in + hold + 1.0f) {
 			stop_animation(filter);
 			if (filter.preview_original) {
 				write_text(parent.get(), filter.latest_caption.value_or(*filter.preview_original));
