@@ -12,7 +12,6 @@ uniform float old_offset;
 uniform float old_height_ratio;
 uniform float canvas_left;
 uniform float canvas_span;
-uniform float texture_width;
 uniform bool box_swipe;
 
 sampler_state caption_sampler {
@@ -53,7 +52,8 @@ float4 PSCaption(VertInOut vert_in) : TARGET
 VertInOut VSBlend(VertInOut vert_in)
 {
 	VertInOut vert_out;
-	vert_in.pos.x = (canvas_left + vert_in.uv.x * canvas_span) * texture_width;
+	// OBS applies the texture dimensions through ViewProj when drawing a sprite.
+	vert_in.pos.x = canvas_left + vert_in.pos.x * canvas_span;
 	vert_out.pos = mul(float4(vert_in.pos.xyz, 1.0), ViewProj);
 	vert_out.uv = float2(canvas_left + vert_in.uv.x * canvas_span, vert_in.uv.y);
 	return vert_out;

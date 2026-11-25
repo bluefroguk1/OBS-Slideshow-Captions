@@ -586,6 +586,15 @@ void tick(void *opaque, float seconds)
 		select_swipe_item(filter, parent.get());
 }
 
+void set_draw_parameters(gs_effect_t *effect, Visual style, float opacity, bool incoming, SwipeLimits limits)
+{
+	gs_effect_set_int(gs_effect_get_param_by_name(effect, "style"), static_cast<int>(style));
+	gs_effect_set_float(gs_effect_get_param_by_name(effect, "opacity"), opacity);
+	gs_effect_set_bool(gs_effect_get_param_by_name(effect, "incoming"), incoming);
+	gs_effect_set_float(gs_effect_get_param_by_name(effect, "swipe_left"), limits.left);
+	gs_effect_set_float(gs_effect_get_param_by_name(effect, "swipe_right"), limits.right);
+}
+
 void render_capture(Filter &filter, uint32_t width, uint32_t height)
 {
 	gs_texrender_reset(filter.outgoing);
@@ -603,11 +612,11 @@ void render_capture(Filter &filter, uint32_t width, uint32_t height)
 	gs_blend_state_push();
 	gs_blend_function(GS_BLEND_ONE, GS_BLEND_ZERO);
 	auto *effect = filter.effect;
-	gs_effect_set_int(gs_effect_get_param_by_name(effect, "style"), 0);
-	gs_effect_set_float(gs_effect_get_param_by_name(effect, "opacity"), 1.0f);
 	const bool captured = obs_source_process_filter_begin(filter.source, GS_RGBA, OBS_NO_DIRECT_RENDERING);
-	if (captured)
+	if (captured) {
+		set_draw_parameters(effect, Visual::Cut, 1.0f, false, {});
 		obs_source_process_filter_end(filter.source, effect, 0, 0);
+	}
 	gs_blend_state_pop();
 	gs_matrix_pop();
 	gs_projection_pop();
@@ -622,6 +631,7 @@ void render_capture(Filter &filter, uint32_t width, uint32_t height)
 	gs_blend_function(GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
 	const bool srgb = gs_framebuffer_srgb_enabled();
 	gs_enable_framebuffer_srgb(true);
+	set_draw_parameters(effect, Visual::Cut, 1.0f, false, {});
 	gs_effect_set_texture_srgb(gs_effect_get_param_by_name(effect, "image"), texture);
 	while (gs_effect_loop(effect, "Draw"))
 		gs_draw_sprite(texture, 0, 0, 0);
@@ -660,7 +670,6 @@ bool render_blend(Filter &filter, float progress, uint32_t width, uint32_t heigh
 			    static_cast<float>(height) / gs_texture_get_height(texture));
 	gs_effect_set_float(gs_effect_get_param_by_name(effect, "canvas_left"), left);
 	gs_effect_set_float(gs_effect_get_param_by_name(effect, "canvas_span"), right - left);
-	gs_effect_set_float(gs_effect_get_param_by_name(effect, "texture_width"), static_cast<float>(width));
 	gs_effect_set_float(gs_effect_get_param_by_name(effect, "swipe_left"), box_motion ? limits.left : 0.0f);
 	gs_effect_set_float(gs_effect_get_param_by_name(effect, "swipe_right"), box_motion ? limits.right : 1.0f);
 	gs_effect_set_bool(gs_effect_get_param_by_name(effect, "box_swipe"), box_swipe);
@@ -694,15 +703,9 @@ void render(void *opaque, gs_effect_t *)
 	}
 	if (!obs_source_process_filter_begin(filter.source, GS_RGBA, OBS_NO_DIRECT_RENDERING))
 		return;
-	gs_effect_set_float(gs_effect_get_param_by_name(filter.effect, "opacity"), opacity);
 	const auto style = filter.visual.load();
-	gs_effect_set_int(gs_effect_get_param_by_name(filter.effect, "style"), static_cast<int>(style));
-	gs_effect_set_bool(gs_effect_get_param_by_name(filter.effect, "incoming"), filter.incoming.load());
-	if (style == Visual::Swipe) {
-		const auto limits = swipe_limits(filter);
-		gs_effect_set_float(gs_effect_get_param_by_name(filter.effect, "swipe_left"), limits.left);
-		gs_effect_set_float(gs_effect_get_param_by_name(filter.effect, "swipe_right"), limits.right);
-	}
+	set_draw_parameters(filter.effect, style, opacity, filter.incoming.load(),
+			    style == Visual::Swipe ? swipe_limits(filter) : SwipeLimits{});
 	gs_blend_state_push();
 	gs_blend_function(GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
 	obs_source_process_filter_end(filter.source, filter.effect, 0, 0);
