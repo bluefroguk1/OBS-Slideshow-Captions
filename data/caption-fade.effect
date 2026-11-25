@@ -3,6 +3,8 @@ uniform texture2d image;
 uniform float opacity;
 uniform int style;
 uniform bool incoming;
+uniform float swipe_left;
+uniform float swipe_right;
 
 sampler_state caption_sampler {
 	Filter   = Linear;
@@ -27,7 +29,8 @@ float4 PSCaption(VertInOut vert_in) : TARGET
 {
 	float2 uv = vert_in.uv;
 	if (style == 2 && opacity < 1.0) {
-		if ((incoming && uv.x < 1.0 - opacity) || (!incoming && uv.x >= opacity))
+		float edge = lerp(swipe_left, swipe_right, incoming ? 1.0 - opacity : opacity);
+		if (opacity <= 0.0 || (incoming && uv.x < edge) || (!incoming && uv.x >= edge))
 			return float4(0.0, 0.0, 0.0, 0.0);
 	}
 	if (style == 3)

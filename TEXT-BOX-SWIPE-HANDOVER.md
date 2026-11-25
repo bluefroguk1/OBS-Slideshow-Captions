@@ -22,4 +22,6 @@ Keep the current transition duration, easing, direction, and hide/reveal sequenc
 6. Compare runs with the option on and off using the same custom duration, then repeat with **Match slideshow duration** enabled. The overall duration and caption swap point should be the same for each pair. The times when individual letters appear or disappear can shift as the mask travels through empty space.
 7. Switch the slideshow to Fade, then switch the caption to **Custom fade** and **OBS show/hide**. Check that those effects behave as before. Reopen OBS to verify the checkbox setting persists. Repeat the Swipe check with text sources without bounds and, if available, with both FreeType2 and GDI+.
 
-This branch contains the plan and test steps. Feature implementation and OBS verification are pending.
+The checkbox and bounds-based mask are implemented. Cropped items and sources
+with more than one visible placement use the texture-based mask. Use the
+steps above for frame-by-frame verification in OBS.

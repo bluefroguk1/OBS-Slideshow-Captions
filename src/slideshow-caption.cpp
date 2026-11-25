@@ -1,10 +1,12 @@
 #include "caption-content.h"
 
 #include <obs-module.h>
+#include <graphics/matrix4.h>
 #include <util/bmem.h>
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <condition_variable>
 #include <memory>
 #include <mutex>
@@ -41,6 +43,7 @@ struct Options {
 	std::string slideshow;
 	Transition transition = Transition::Instant;
 	bool match_duration = false;
+	bool swipe_text_box = false;
 	uint32_t duration_ms = 0;
 };
 
@@ -118,6 +121,8 @@ struct Filter {
 	std::string pending_caption;
 	std::atomic<float> opacity{1.0f};
 	std::atomic<Visual> visual{Visual::Cut};
+	// Tick selects the item. Render reads its current matrices after OBS lays out the text.
+	std::shared_ptr<obs_sceneitem_t> swipe_item;
 	std::atomic<bool> incoming{false};
 	uint32_t matched_show_ms = 0;
 	float elapsed = 0;
@@ -210,6 +215,69 @@ bool collect_text_items(obs_scene_t *, obs_sceneitem_t *item, void *opaque)
 	return true;
 }
 
+TextItems showing_text_items(obs_source_t *text)
+{
+	TextItems search{text, {}};
+	obs_enum_scenes([](void *opaque, obs_source_t *source) {
+		if (auto *scene = obs_scene_from_source(source); scene && obs_source_showing(source))
+			obs_scene_enum_items(scene, collect_text_items, opaque);
+		return true;
+	}, &search);
+	return search;
+}
+
+void select_swipe_item(Filter &filter, obs_source_t *parent)
+{
+	std::shared_ptr<obs_sceneitem_t> selected;
+	auto *target = obs_filter_get_target(filter.source);
+	if (target && obs_source_get_base_width(target) == obs_source_get_width(parent)) {
+		auto search = showing_text_items(parent);
+		if (search.items.size() == 1)
+			selected = std::move(search.items.front());
+	}
+	std::atomic_store(&filter.swipe_item, std::move(selected));
+}
+
+struct SwipeLimits {
+	float left = 0.0f;
+	float right = 1.0f;
+};
+
+SwipeLimits swipe_limits(Filter &filter)
+{
+	const auto item = std::atomic_load(&filter.swipe_item);
+	if (!item || !obs_sceneitem_get_scene(item.get()) ||
+	    obs_sceneitem_get_bounds_type(item.get()) == OBS_BOUNDS_NONE ||
+	    obs_sceneitem_get_bounds_crop(item.get()))
+		return {};
+	obs_sceneitem_crop crop{};
+	obs_sceneitem_get_crop(item.get(), &crop);
+	if (crop.left || crop.right || crop.top || crop.bottom)
+		return {};
+
+	auto *target = obs_filter_get_target(filter.source);
+	if (!target)
+		return {};
+	const auto width = obs_source_get_base_width(target);
+	if (!width)
+		return {};
+
+	matrix4 draw, box;
+	obs_sceneitem_get_draw_transform(item.get(), &draw);
+	obs_sceneitem_get_box_transform(item.get(), &box);
+
+	// Project the two box edges onto the texture's horizontal axis.
+	const float extent = (draw.x.x * draw.x.x + draw.x.y * draw.x.y) * width;
+	if (!(extent > 0.0f))
+		return {};
+	const float first = ((box.t.x - draw.t.x) * draw.x.x + (box.t.y - draw.t.y) * draw.x.y) / extent;
+	const float span = (box.x.x * draw.x.x + box.x.y * draw.x.y) / extent;
+	const float last = first + span;
+	if (!std::isfinite(first) || !std::isfinite(last) || first == last)
+		return {};
+	return {std::min(first, last), std::max(first, last)};
+}
+
 float transition_seconds(obs_sceneitem_t *item, bool show, uint32_t matched_ms)
 {
 	if (!obs_sceneitem_get_transition(item, show))
@@ -242,6 +310,7 @@ void restore_visibility(Filter &filter)
 void stop_animation(Filter &filter)
 {
 	restore_visibility(filter);
+	std::atomic_store(&filter.swipe_item, std::shared_ptr<obs_sceneitem_t>{});
 	filter.stage = Stage::Idle;
 	filter.opacity = 1.0f;
 }
@@ -283,12 +352,7 @@ void animate(Filter &filter, obs_source_t *parent, std::string caption)
 	filter.visual = visual;
 	const auto duration_ms = match_duration ? slideshow_ms : filter.current.duration_ms;
 	if (transition == Transition::Obs && duration_ms > 0) {
-		TextItems search{parent, {}};
-		obs_enum_scenes([](void *opaque, obs_source_t *source) {
-			if (obs_source_showing(source))
-				obs_scene_enum_items(obs_scene_from_source(source), collect_text_items, opaque);
-			return true;
-		}, &search);
+		auto search = showing_text_items(parent);
 		const auto has_transition = [&](bool show) {
 			return std::any_of(search.items.begin(), search.items.end(), [show](const SceneItem &item) {
 				return obs_sceneitem_get_transition(item.get(), show) != nullptr;
@@ -339,6 +403,7 @@ void update(void *opaque, obs_data_t *settings)
 	options.caption.metadata = obs_data_get_string(settings, "metadata");
 	options.transition = static_cast<Transition>(obs_data_get_int(settings, "transition"));
 	options.match_duration = obs_data_get_bool(settings, "match_duration");
+	options.swipe_text_box = obs_data_get_bool(settings, "swipe_text_box");
 	const auto *duration_key = duration_setting(options.transition);
 	options.duration_ms = static_cast<uint32_t>(std::clamp<int64_t>(obs_data_get_int(settings, duration_key), 0, 20000));
 	std::lock_guard lock(filter.mailbox);
@@ -466,6 +531,9 @@ void tick(void *opaque, float seconds)
 			}
 		}
 	}
+	if (filter.current.swipe_text_box && filter.visual.load() == Visual::Swipe &&
+	    (filter.stage == Stage::Hiding || filter.stage == Stage::Showing))
+		select_swipe_item(filter, parent.get());
 }
 
 void render(void *opaque, gs_effect_t *)
@@ -479,8 +547,14 @@ void render(void *opaque, gs_effect_t *)
 	if (!obs_source_process_filter_begin(filter.source, GS_RGBA, OBS_NO_DIRECT_RENDERING))
 		return;
 	gs_effect_set_float(gs_effect_get_param_by_name(filter.effect, "opacity"), opacity);
-	gs_effect_set_int(gs_effect_get_param_by_name(filter.effect, "style"), static_cast<int>(filter.visual.load()));
+	const auto style = filter.visual.load();
+	gs_effect_set_int(gs_effect_get_param_by_name(filter.effect, "style"), static_cast<int>(style));
 	gs_effect_set_bool(gs_effect_get_param_by_name(filter.effect, "incoming"), filter.incoming.load());
+	if (style == Visual::Swipe) {
+		const auto limits = swipe_limits(filter);
+		gs_effect_set_float(gs_effect_get_param_by_name(filter.effect, "swipe_left"), limits.left);
+		gs_effect_set_float(gs_effect_get_param_by_name(filter.effect, "swipe_right"), limits.right);
+	}
 	gs_blend_state_push();
 	gs_blend_function(GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
 	obs_source_process_filter_end(filter.source, filter.effect, 0, 0);
@@ -565,6 +639,7 @@ bool property_visibility(obs_properties_t *properties, obs_property_t *, obs_dat
 				 mode == CaptionMode::Regex || mode == CaptionMode::Metadata);
 	obs_property_set_visible(obs_properties_get(properties, "index"), mode == CaptionMode::TextIndex);
 	const bool manual_duration = !obs_data_get_bool(settings, "match_duration");
+	obs_property_set_visible(obs_properties_get(properties, "swipe_text_box"), transition == Transition::MatchStyle);
 	for (auto choice : {Transition::Instant, Transition::Fade, Transition::MatchStyle, Transition::Obs}) {
 		obs_property_set_visible(obs_properties_get(properties, duration_setting(choice)),
 					 manual_duration && choice == transition);
@@ -611,6 +686,7 @@ obs_properties_t *properties(void *opaque)
 	obs_property_set_modified_callback(transition, property_visibility);
 	auto *duration = obs_properties_add_bool(props, "match_duration", "Match slideshow duration");
 	obs_property_set_modified_callback(duration, property_visibility);
+	obs_properties_add_bool(props, "swipe_text_box", "Use text box for swipe");
 	for (auto choice : {Transition::Instant, Transition::Fade, Transition::MatchStyle, Transition::Obs})
 		obs_properties_add_int(props, duration_setting(choice), "Duration (ms)", 0, 20000, 1);
 	auto *preview = obs_properties_add_button2(props, "preview", "Preview on the Text source",

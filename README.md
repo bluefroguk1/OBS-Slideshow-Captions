@@ -170,6 +170,12 @@ as shown (a single backslash).
 Each has a **Duration (ms)**. Turn on **Match slideshow duration** to use the
 slideshow's transition time instead.
 
+With **Match slideshow style**, enable **Use text box for swipe** to move the
+Swipe mask across the Text scene item's bounding box. The mask includes empty
+space around a short caption. This option is off by default. The filter uses
+the caption texture as the swipe area when the scene item has no bounds, is
+cropped, or has multiple visible placements.
+
 ### Try it first
 
 **Preview on the Text source** plays two sample captions so you can judge the
