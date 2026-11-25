@@ -21,7 +21,7 @@ namespace {
 
 enum class Transition { Instant = 0, Fade = 1, Obs = 3, MatchStyle = 4 };
 enum class Visual { Cut, Fade, Swipe, Slide };
-enum class Stage { Idle, PreviewStart, Hiding, Swapping, Showing };
+enum class Stage { Idle, PreviewStart, Hiding, Swapping, Showing, Capture, Blend };
 
 const char *duration_setting(Transition transition)
 {
@@ -50,6 +50,12 @@ struct Options {
 using Source = std::unique_ptr<obs_source_t, decltype(&obs_source_release)>;
 using SceneItem = std::unique_ptr<obs_sceneitem_t, decltype(&obs_sceneitem_release)>;
 using Data = std::unique_ptr<obs_data_t, decltype(&obs_data_release)>;
+
+struct SwipeLimits {
+	float left = 0.0f;
+	float right = 1.0f;
+	bool bounded = false;
+};
 
 struct Job {
 	CaptionConfig config;
@@ -124,6 +130,13 @@ struct Filter {
 	// Tick selects the item. Render reads its current matrices after OBS lays out the text.
 	std::shared_ptr<obs_sceneitem_t> swipe_item;
 	std::atomic<bool> incoming{false};
+	std::atomic<bool> capture_requested{false};
+	std::atomic<bool> capture_ready{false};
+	std::atomic<float> blend_progress{-1.0f};
+	std::atomic<bool> blend_box_swipe{false};
+	Source slideshow_transition{nullptr, obs_source_release};
+	gs_texrender_t *outgoing = nullptr;
+	SwipeLimits outgoing_limits;
 	uint32_t matched_show_ms = 0;
 	float elapsed = 0;
 	float fade_start = 1;
@@ -238,11 +251,6 @@ void select_swipe_item(Filter &filter, obs_source_t *parent)
 	std::atomic_store(&filter.swipe_item, std::move(selected));
 }
 
-struct SwipeLimits {
-	float left = 0.0f;
-	float right = 1.0f;
-};
-
 SwipeLimits swipe_limits(Filter &filter)
 {
 	const auto item = std::atomic_load(&filter.swipe_item);
@@ -275,7 +283,7 @@ SwipeLimits swipe_limits(Filter &filter)
 	const float last = first + span;
 	if (!std::isfinite(first) || !std::isfinite(last) || first == last)
 		return {};
-	return {std::min(first, last), std::max(first, last)};
+	return {std::min(first, last), std::max(first, last), true};
 }
 
 float transition_seconds(obs_sceneitem_t *item, bool show, uint32_t matched_ms)
@@ -311,6 +319,9 @@ void stop_animation(Filter &filter)
 {
 	restore_visibility(filter);
 	std::atomic_store(&filter.swipe_item, std::shared_ptr<obs_sceneitem_t>{});
+	filter.capture_requested = false;
+	filter.blend_progress = -1.0f;
+	filter.slideshow_transition.reset();
 	filter.stage = Stage::Idle;
 	filter.opacity = 1.0f;
 }
@@ -351,6 +362,24 @@ void animate(Filter &filter, obs_source_t *parent, std::string caption)
 			    : transition == Transition::Fade ? Visual::Fade : Visual::Cut;
 	filter.visual = visual;
 	const auto duration_ms = match_duration ? slideshow_ms : filter.current.duration_ms;
+	if (transition == Transition::MatchStyle && visual != Visual::Cut && duration_ms && filter.outgoing) {
+		select_swipe_item(filter, parent);
+		filter.blend_box_swipe = filter.current.swipe_text_box;
+		filter.blend_progress = -1.0f;
+		filter.capture_ready = false;
+		filter.capture_requested = true;
+		filter.in = duration_ms / 1000.0f;
+		filter.stage = Stage::Capture;
+		filter.slideshow_transition.reset();
+		if (match_duration && !filter.preview_original) {
+			obs_source_enum_active_sources(filter.slideshow.get(), [](obs_source_t *, obs_source_t *child, void *data) {
+				auto &found = *static_cast<Source *>(data);
+				if (!found && obs_source_get_type(child) == OBS_SOURCE_TYPE_TRANSITION)
+					found.reset(obs_source_get_ref(child));
+			}, &filter.slideshow_transition);
+		}
+		return;
+	}
 	if (transition == Transition::Obs && duration_ms > 0) {
 		auto search = showing_text_items(parent);
 		const auto has_transition = [&](bool show) {
@@ -507,6 +536,27 @@ void tick(void *opaque, float seconds)
 	if (filter.stage == Stage::PreviewStart) {
 		if (filter.elapsed >= 0.5f)
 			animate(filter, parent.get(), "Preview · Next caption");
+	} else if (filter.stage == Stage::Capture) {
+		if (filter.capture_ready || filter.elapsed >= 0.1f) {
+			filter.capture_requested = false;
+			write_text(parent.get(), filter.pending_caption);
+			filter.stage = Stage::Blend;
+		}
+	}
+	if (filter.stage == Stage::Blend) {
+		const float progress = filter.slideshow_transition
+					       ? obs_transition_get_time(filter.slideshow_transition.get())
+					       : filter.elapsed / filter.in;
+		filter.blend_progress = filter.capture_ready ? std::clamp(progress, 0.0f, 1.0f) : -1.0f;
+		select_swipe_item(filter, parent.get());
+		const float hold = filter.preview_original ? 1.0f : 0.0f;
+		if (progress >= 1.0f && filter.elapsed >= filter.in + hold) {
+			stop_animation(filter);
+			if (filter.preview_original) {
+				write_text(parent.get(), filter.latest_caption.value_or(*filter.preview_original));
+				filter.preview_original.reset();
+			}
+		}
 	} else if (filter.stage == Stage::Hiding) {
 		if (!filter.preview_original && revision != filter.animation_revision && !reading)
 			return;
@@ -536,9 +586,107 @@ void tick(void *opaque, float seconds)
 		select_swipe_item(filter, parent.get());
 }
 
+void render_capture(Filter &filter, uint32_t width, uint32_t height)
+{
+	gs_texrender_reset(filter.outgoing);
+	if (!width || !height || !gs_texrender_begin(filter.outgoing, width, height)) {
+		obs_source_skip_video_filter(filter.source);
+		return;
+	}
+	gs_projection_push();
+	gs_matrix_push();
+	gs_matrix_identity();
+	gs_ortho(0.0f, static_cast<float>(width), 0.0f, static_cast<float>(height), -100.0f, 100.0f);
+	vec4 clear;
+	vec4_zero(&clear);
+	gs_clear(GS_CLEAR_COLOR, &clear, 0.0f, 0);
+	gs_blend_state_push();
+	gs_blend_function(GS_BLEND_ONE, GS_BLEND_ZERO);
+	auto *effect = filter.effect;
+	gs_effect_set_int(gs_effect_get_param_by_name(effect, "style"), 0);
+	gs_effect_set_float(gs_effect_get_param_by_name(effect, "opacity"), 1.0f);
+	const bool captured = obs_source_process_filter_begin(filter.source, GS_RGBA, OBS_NO_DIRECT_RENDERING);
+	if (captured)
+		obs_source_process_filter_end(filter.source, effect, 0, 0);
+	gs_blend_state_pop();
+	gs_matrix_pop();
+	gs_projection_pop();
+	gs_texrender_end(filter.outgoing);
+	if (!captured) {
+		obs_source_skip_video_filter(filter.source);
+		return;
+	}
+	auto *texture = gs_texrender_get_texture(filter.outgoing);
+	filter.outgoing_limits = swipe_limits(filter);
+	gs_blend_state_push();
+	gs_blend_function(GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
+	const bool srgb = gs_framebuffer_srgb_enabled();
+	gs_enable_framebuffer_srgb(true);
+	gs_effect_set_texture_srgb(gs_effect_get_param_by_name(effect, "image"), texture);
+	while (gs_effect_loop(effect, "Draw"))
+		gs_draw_sprite(texture, 0, 0, 0);
+	gs_enable_framebuffer_srgb(srgb);
+	gs_blend_state_pop();
+	filter.capture_ready = true;
+}
+
+bool render_blend(Filter &filter, float progress, uint32_t width, uint32_t height)
+{
+	auto *texture = gs_texrender_get_texture(filter.outgoing);
+	if (!texture || !width)
+		return false;
+	if (!obs_source_process_filter_begin(filter.source, GS_RGBA, OBS_NO_DIRECT_RENDERING))
+		return true;
+	const auto style = filter.visual.load();
+	const auto limits = swipe_limits(filter);
+	const auto old = filter.outgoing_limits;
+	const bool bounded = limits.bounded && old.bounded;
+	const auto span = limits.right - limits.left;
+	const auto old_span = old.right - old.left;
+	const float fit = static_cast<float>(width) / gs_texture_get_width(texture);
+	const float ratio = bounded ? old_span / span : fit;
+	const float offset = bounded ? old.left - limits.left * ratio : (1.0f - fit) / 2.0f;
+	const bool box_swipe = bounded && filter.blend_box_swipe;
+	const bool box_motion = bounded && (box_swipe || style == Visual::Slide);
+	const float left = std::min({0.0f, -offset / ratio, box_motion ? limits.left : 0.0f});
+	const float right = std::max({1.0f, (1.0f - offset) / ratio, box_motion ? limits.right : 1.0f});
+	auto *effect = filter.effect;
+	gs_effect_set_texture_srgb(gs_effect_get_param_by_name(effect, "outgoing_image"), texture);
+	gs_effect_set_int(gs_effect_get_param_by_name(effect, "style"), static_cast<int>(style));
+	gs_effect_set_float(gs_effect_get_param_by_name(effect, "progress"), progress);
+	gs_effect_set_float(gs_effect_get_param_by_name(effect, "old_ratio"), ratio);
+	gs_effect_set_float(gs_effect_get_param_by_name(effect, "old_offset"), offset);
+	gs_effect_set_float(gs_effect_get_param_by_name(effect, "old_height_ratio"),
+			    static_cast<float>(height) / gs_texture_get_height(texture));
+	gs_effect_set_float(gs_effect_get_param_by_name(effect, "canvas_left"), left);
+	gs_effect_set_float(gs_effect_get_param_by_name(effect, "canvas_span"), right - left);
+	gs_effect_set_float(gs_effect_get_param_by_name(effect, "texture_width"), static_cast<float>(width));
+	gs_effect_set_float(gs_effect_get_param_by_name(effect, "swipe_left"), box_motion ? limits.left : 0.0f);
+	gs_effect_set_float(gs_effect_get_param_by_name(effect, "swipe_right"), box_motion ? limits.right : 1.0f);
+	gs_effect_set_bool(gs_effect_get_param_by_name(effect, "box_swipe"), box_swipe);
+	gs_blend_state_push();
+	gs_blend_function(GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
+	obs_source_process_filter_tech_end(filter.source, effect, 0, 0, "Blend");
+	gs_blend_state_pop();
+	return true;
+}
+
 void render(void *opaque, gs_effect_t *)
 {
 	auto &filter = *static_cast<Filter *>(opaque);
+	const auto progress = filter.blend_progress.load();
+	if (filter.effect && filter.outgoing && (filter.capture_requested || (progress >= 0.0f && progress < 1.0f))) {
+		auto *target = obs_filter_get_target(filter.source);
+		if (target) {
+			const auto width = obs_source_get_base_width(target);
+			if (filter.capture_requested && !filter.capture_ready) {
+				render_capture(filter, width, obs_source_get_base_height(target));
+				return;
+			}
+			if (progress >= 0.0f && render_blend(filter, progress, width, obs_source_get_base_height(target)))
+				return;
+		}
+	}
 	const float opacity = filter.opacity.load();
 	if (!filter.effect || opacity >= 1.0f) {
 		obs_source_skip_video_filter(filter.source);
@@ -575,6 +723,8 @@ void *create(obs_data_t *settings, obs_source_t *source)
 		obs_enter_graphics();
 		if (path)
 			filter->effect = gs_effect_create_from_file(path, nullptr);
+		if (filter->effect)
+			filter->outgoing = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
 		obs_leave_graphics();
 		bfree(path);
 		if (!filter->effect)
@@ -598,6 +748,8 @@ void destroy(void *opaque)
 	obs_enter_graphics();
 	if (filter->effect)
 		gs_effect_destroy(filter->effect);
+	if (filter->outgoing)
+		gs_texrender_destroy(filter->outgoing);
 	obs_leave_graphics();
 }
 

@@ -5,6 +5,15 @@ uniform int style;
 uniform bool incoming;
 uniform float swipe_left;
 uniform float swipe_right;
+uniform texture2d outgoing_image;
+uniform float progress;
+uniform float old_ratio;
+uniform float old_offset;
+uniform float old_height_ratio;
+uniform float canvas_left;
+uniform float canvas_span;
+uniform float texture_width;
+uniform bool box_swipe;
 
 sampler_state caption_sampler {
 	Filter   = Linear;
@@ -41,11 +50,62 @@ float4 PSCaption(VertInOut vert_in) : TARGET
 	return style == 1 ? rgba * opacity : rgba;
 }
 
+VertInOut VSBlend(VertInOut vert_in)
+{
+	VertInOut vert_out;
+	vert_in.pos.x = (canvas_left + vert_in.uv.x * canvas_span) * texture_width;
+	vert_out.pos = mul(float4(vert_in.pos.xyz, 1.0), ViewProj);
+	vert_out.uv = float2(canvas_left + vert_in.uv.x * canvas_span, vert_in.uv.y);
+	return vert_out;
+}
+
+float4 PSBlend(VertInOut vert_in) : TARGET
+{
+	float2 uv = vert_in.uv;
+	float2 incoming_uv = uv;
+	float2 outgoing_uv = float2(uv.x * old_ratio + old_offset, uv.y * old_height_ratio);
+	float t = progress < 0.5 ? 4.0 * progress * progress * progress
+	                        : 1.0 - 4.0 * (1.0 - progress) * (1.0 - progress) * (1.0 - progress);
+	if (style == 3) {
+		float distance = swipe_right - swipe_left;
+		incoming_uv.x -= distance * (1.0 - t);
+		outgoing_uv.x += distance * t * old_ratio;
+	}
+	float4 previous = float4(0.0, 0.0, 0.0, 0.0);
+	float4 next = previous;
+	if (outgoing_uv.x >= 0.0 && outgoing_uv.x < 1.0 && outgoing_uv.y < 1.0)
+		previous = outgoing_image.Sample(caption_sampler, outgoing_uv);
+	if (incoming_uv.x >= 0.0 && incoming_uv.x < 1.0)
+		next = image.Sample(caption_sampler, incoming_uv);
+	if (style == 2) {
+		if (box_swipe)
+			return uv.x < lerp(swipe_left, swipe_right, 1.0 - t) ? previous : next;
+		previous = outgoing_uv.x < 1.0 - t ? previous : float4(0.0, 0.0, 0.0, 0.0);
+		next = incoming_uv.x >= 1.0 - t ? next : float4(0.0, 0.0, 0.0, 0.0);
+		return next + previous * (1.0 - next.a);
+	}
+	if (style == 3) {
+		if (uv.x < swipe_left || uv.x >= swipe_right)
+			return float4(0.0, 0.0, 0.0, 0.0);
+		return next + previous * (1.0 - next.a);
+	}
+	return lerp(previous, next, progress);
+}
+
 technique Draw
 {
 	pass
 	{
 		vertex_shader = VSCaption(vert_in);
 		pixel_shader  = PSCaption(vert_in);
+	}
+}
+
+technique Blend
+{
+	pass
+	{
+		vertex_shader = VSBlend(vert_in);
+		pixel_shader = PSBlend(vert_in);
 	}
 }

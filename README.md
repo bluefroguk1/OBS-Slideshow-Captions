@@ -170,6 +170,10 @@ as shown (a single backslash).
 Each has a **Duration (ms)**. Turn on **Match slideshow duration** to use the
 slideshow's transition time instead.
 
+**Match slideshow style** transitions both captions together. When duration
+matching is also enabled, it follows the linked slideshow's live transition
+progress when OBS exposes it.
+
 With **Match slideshow style**, enable **Use text box for swipe** to move the
 Swipe mask across the Text scene item's bounding box. The mask includes empty
 space around a short caption. This option is off by default. The filter uses
